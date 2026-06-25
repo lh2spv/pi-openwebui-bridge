@@ -67,7 +67,7 @@
          "api": "openai-completions",
          "apiKey": "dummy",
          "models": [
-           { "id": "<モデル名>", "name": "AIサーバ", "input": ["text"],
+           { "id": "<モデル名>", "name": "AIサーバ", "input": ["text", "image"],
              "contextWindow": 8192, "maxTokens": 4096 }
          ]
        }
