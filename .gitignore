@@ -1,0 +1,7 @@
+workspace/
+__pycache__/
+*.pyc
+_pi_dl/
+pi_*.md
+start_bridge.ps1
+.DS_Store
