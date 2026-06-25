@@ -54,7 +54,11 @@ python pi_bridge.py
 設定しない限り API キーは何でも可）。Open WebUI では **OpenAI API 接続**としてこの
 Base URL を追加します。
 
-より詳しい例は [`start_bridge.example.ps1`](start_bridge.example.ps1) を参照。
+より詳しい例は、ダブルクリックで起動できる
+[`start_bridge.example.bat`](start_bridge.example.bat)（手軽・配布向き）または
+[`start_bridge.example.ps1`](start_bridge.example.ps1) を参照。`.bat` は
+`start_bridge.bat` にコピーして値を編集して使います（**ASCII で保存**すること。
+cmd は UTF-8 コメントを誤解析します）。
 
 ## 設定（環境変数）
 
