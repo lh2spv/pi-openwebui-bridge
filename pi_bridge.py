@@ -29,6 +29,7 @@ OpenAI 互換の薄い HTTP シム。Open WebUI から「1モデル」として 
   PI_SHOW_TOOLS   "1" で、ツール実行を本文に [tool: ...] として差し込む(可視化)。
   PI_THINKING     pi --thinking レベル (off/minimal/low/medium/high)。default off。
 """
+import base64
 import json
 import os
 import shlex
@@ -74,26 +75,64 @@ def _parse_models():
 MODELS = _parse_models()
 
 
+_IMG_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg",
+            "image/gif": "gif", "image/webp": "webp"}
+
+
+def _parse_data_url(url):
+    """data:image/png;base64,XXXX -> (bytes, ext)。それ以外は None。"""
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    try:
+        header, b64 = url.split(",", 1)
+    except ValueError:
+        return None
+    mime = header[5:].split(";")[0].lower()
+    try:
+        return base64.b64decode(b64), _IMG_EXT.get(mime, "png")
+    except Exception:
+        return None
+
+
 def _serialize_messages(messages):
-    """OWUI の messages[] を (system_text, conversation_text) に変換。"""
+    """OWUI の messages[] を (system_text, conversation_text, images) に変換。
+    images は最後の user メッセージに添付された画像 [(bytes, ext), ...]
+    (pi は -p では会話を1プロンプトに直列化するため、画像は最新ターン分のみ添付する)。"""
     sys_parts, convo = [], []
+    last_user_images = []
     for m in messages:
         role = m.get("role", "user")
         content = m.get("content", "")
+        msg_images = []
         if isinstance(content, list):  # OpenAI のマルチパート content
-            content = "".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-            )
+            texts = []
+            for p in content:
+                if not isinstance(p, dict):
+                    continue
+                t = p.get("type")
+                if t == "text":
+                    texts.append(p.get("text", ""))
+                elif t == "image_url":
+                    iu = p.get("image_url")
+                    url = iu.get("url") if isinstance(iu, dict) else iu
+                    img = _parse_data_url(url)
+                    if img:
+                        msg_images.append(img)
+            content = "".join(texts)
         content = (content or "").strip()
-        if not content:
+        if role == "user" and msg_images:
+            last_user_images = msg_images  # 最新の user 画像で上書き
+        if not content and not msg_images:
             continue
+        if not content:
+            content = "(image)"
         if role == "system":
             sys_parts.append(content)
         elif role == "assistant":
             convo.append(f"Assistant: {content}")
         else:
             convo.append(f"User: {content}")
-    return "\n".join(sys_parts), "\n\n".join(convo)
+    return "\n".join(sys_parts), "\n\n".join(convo), last_user_images
 
 
 # Windows のコマンドライン長上限(~32767)に対する安全マージン。
@@ -101,7 +140,7 @@ def _serialize_messages(messages):
 _ARG_LIMIT = 28000
 
 
-def _build_cmd(model_args, conversation_text, conv_file, sys_file):
+def _build_cmd(model_args, conversation_text, conv_file, sys_file, image_files=()):
     # --approve: 非対話(-p)でも作業フォルダの .pi/AGENTS.md/スキル等を信頼して読み込む。
     # (非対話モードはトラストのプロンプトを出さず、未判断だと既定でこれらを無視するため)
     cmd = [PI_BIN, "-p", "--mode", "json", "--no-session", "--offline", "--approve"]
@@ -112,20 +151,28 @@ def _build_cmd(model_args, conversation_text, conv_file, sys_file):
     if sys_file:
         cmd += ["--append-system-prompt", sys_file]
     cmd += list(model_args)
-    if conv_file:  # 長すぎる場合のみファイル添付にフォールバック
+    for img in image_files:  # 画像は @ファイルで添付 (pi の画像入力方式)
+        cmd += [f"@{img}"]
+    if conv_file:  # 長すぎる場合のみ会話をファイル添付にフォールバック
         cmd += [f"@{conv_file}"]
     else:
         cmd += [conversation_text]
     return cmd
 
 
-def _iter_pi_text(model_args, system_text, conversation_text):
+def _iter_pi_text(model_args, system_text, conversation_text, images=()):
     """pi を spawn し、テキスト断片(と任意でツール痕跡)を yield する generator。"""
     os.makedirs(CWD, exist_ok=True)
     conversation_text = conversation_text or "User: (no input)"
     conv_path = None
     sys_path = None
+    img_paths = []
     try:
+        for data, ext in images:  # 画像を一時ファイルに保存して pi に @ で渡す
+            ifd, ipath = tempfile.mkstemp(suffix="." + ext, prefix="pi_img_", dir=CWD)
+            with os.fdopen(ifd, "wb") as f:
+                f.write(data)
+            img_paths.append(ipath)
         if len(conversation_text) >= _ARG_LIMIT:
             cfd, conv_path = tempfile.mkstemp(suffix=".md", prefix="pi_conv_", dir=CWD)
             with os.fdopen(cfd, "w", encoding="utf-8") as f:
@@ -135,7 +182,7 @@ def _iter_pi_text(model_args, system_text, conversation_text):
             with os.fdopen(sfd, "w", encoding="utf-8") as f:
                 f.write(system_text)
 
-        cmd = _build_cmd(model_args, conversation_text, conv_path, sys_path)
+        cmd = _build_cmd(model_args, conversation_text, conv_path, sys_path, img_paths)
         proc = subprocess.Popen(
             cmd, cwd=CWD, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -161,7 +208,7 @@ def _iter_pi_text(model_args, system_text, conversation_text):
         if proc.returncode != 0:
             yield f"\n\n[pi-bridge error rc={proc.returncode}] {err.strip()[:500]}"
     finally:
-        for p in (conv_path, sys_path):
+        for p in (conv_path, sys_path, *img_paths):
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
@@ -240,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
         model_id = payload.get("model", "pi-agent")
         model_args = MODELS.get(model_id, MODELS.get("pi-agent", []))
         stream = bool(payload.get("stream", False))
-        system_text, conversation_text = _serialize_messages(payload.get("messages", []))
+        system_text, conversation_text, images = _serialize_messages(payload.get("messages", []))
         cid = "chatcmpl-" + uuid.uuid4().hex[:24]
         created = int(time.time())
 
@@ -260,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
                  "model": model_id,
                  "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
             try:
-                for piece in _iter_pi_text(model_args, system_text, conversation_text):
+                for piece in _iter_pi_text(model_args, system_text, conversation_text, images):
                     if not piece:
                         continue
                     sse({"id": cid, "object": "chat.completion.chunk", "created": created,
@@ -274,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         else:
-            text = "".join(_iter_pi_text(model_args, system_text, conversation_text))
+            text = "".join(_iter_pi_text(model_args, system_text, conversation_text, images))
             self._send_json({
                 "id": cid, "object": "chat.completion", "created": created, "model": model_id,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
