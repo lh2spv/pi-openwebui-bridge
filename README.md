@@ -1,131 +1,189 @@
 # pi-openwebui-bridge
 
-[`pi` コーディングエージェント](https://github.com/earendil-works/pi-mono)
-（`pi-coding-agent`）を [Open WebUI](https://github.com/open-webui/open-webui)
-（や任意の OpenAI 互換クライアント）から **1つのモデルとして選べるようにする**、
-依存ゼロの **OpenAI 互換 HTTP シム**です。
+ふだん使う AI チャット画面（**Open WebUI**）から、**あなたのパソコンの中で実際に
+ファイルを作ったり直したりしてくれる AI（コーディングエージェント `pi`）**を
+使えるようにする、小さな“橋渡し”プログラムです。
 
-リクエストごとに `pi` を起動し、エージェントの出力を OpenAI のチャット補完
-（SSE ストリーミング）として返します。エージェントのツール
-（`read`/`edit`/`write`/`bash`）も使えるので、**ファイル編集やコマンド実行を伴う
-本物のコーディングエージェントを、Open WebUI のチャットからそのまま動かせます**。
-推論には `pi` が向いている任意のローカル LLM（llama.cpp、Ollama など）を使います。
+> ⚠️ この AI は、あなたのパソコン上で本当にファイルを書き換えたり、コマンドを実行
+> したりします。チャットに書いた内容がそのまま実行されるので、指示の内容には
+> 気をつけてください。
 
-> ⚠️ **これは shell とファイル書き込み権限を持つ自律エージェントを、bridge を動かした
-> マシン上で実行します。** 公開・共有する前に必ず [セキュリティ](#セキュリティ) を読んでください。
+---
 
-## 仕組み
+# パソコンに詳しくない人向け：セットアップ手順（Windows）
+
+**この通りに上から順番にやれば使えるようになります。** 所要 15〜30 分。
+むずかしい言葉は出てきますが、書いてある操作だけやればOKです。
+
+## 先に教えてもらうこと
+
+自分一人で全部用意するのは大変なので、ふつうは詳しい人（管理者）が「サーバ」を
+用意します。次の2つを教えてもらってください。メモしておきます。
+
+- ① **AI サーバの場所（URL）とモデル名**　例: URL `http://192.168.1.10:8080/v1` ／ モデル名 `gemma4`
+- ② **Open WebUI の場所（URL）** とログイン用アカウント　例: `http://192.168.1.10:3000`
+
+> 全部自分でやる場合は、別途 llama.cpp か Ollama（AI本体）と Open WebUI を
+> 動かしておく必要があります。これは少し上級者向けです。
+
+## ステップ1：Python（パイソン）を入れる
+
+「橋渡しプログラム」を動かすのに必要です。
+
+1. https://www.python.org/downloads/ を開き、黄色い「**Download Python**」ボタンをクリック。
+2. ダウンロードしたファイルを実行。最初の画面で
+   **「Add python.exe to PATH」のチェックを必ず入れて**から「Install Now」。 ← ここ重要！
+3. 確認：スタートメニューで「**PowerShell**」を開き、`python --version` と打って Enter。
+   `Python 3.13.x` のように表示されればOK。
+
+## ステップ2：AI 本体（pi）を入れる
+
+1. https://github.com/earendil-works/pi-mono/releases を開く。
+2. 一番上（最新版）の「Assets」を開き、**`pi-windows-x64.zip`** をダウンロード。
+3. ダウンロードした ZIP を右クリック →「**すべて展開**」。
+4. 出てきたフォルダの中に **`pi.exe`** があります。フォルダごと分かりやすい場所
+   （例 `C:\pi`）に移動。**`pi.exe` の場所（例 `C:\pi\pi.exe`）をメモ**しておく。
+
+## ステップ3：この「橋渡しプログラム」を入れる
+
+1. **このページの上のほうにある緑色の「Code」ボタン → 「Download ZIP」**をクリック。
+2. ZIP を右クリック →「すべて展開」。出てきたフォルダを分かりやすい場所
+   （例 `C:\pi-bridge`）に置く。
+
+## ステップ4：AI に「サーバの場所」を教える
+
+1. **Windows キー + R** を同時押し → `cmd` と入力して Enter（黒い画面が開く）。
+2. 黒い画面に次を打って Enter（設定を置くフォルダを作ります）:
+   ```
+   mkdir %USERPROFILE%\.pi\agent
+   ```
+3. **Windows キー + R** → `notepad` と入力して Enter（メモ帳が開く）。
+4. 下をそのまま貼り付け、`<サーバのURL>` と `<モデル名>`（①で教わった値）を書き換える:
+   ```json
+   {
+     "providers": {
+       "myllm": {
+         "baseUrl": "<サーバのURL>",
+         "api": "openai-completions",
+         "apiKey": "dummy",
+         "models": [
+           { "id": "<モデル名>", "name": "AIサーバ", "input": ["text"],
+             "contextWindow": 8192, "maxTokens": 4096 }
+         ]
+       }
+     }
+   }
+   ```
+5. メモ帳で「ファイル → 名前を付けて保存」。
+   - 「ファイルの種類」を **「すべてのファイル」** に変更。
+   - ファイル名の欄に **`%USERPROFILE%\.pi\agent\models.json`** と入力して保存。
+
+## ステップ5：起動ファイルを用意する
+
+1. `C:\pi-bridge` の中の **`start_bridge.example.bat`** をコピーし、
+   名前を **`start_bridge.bat`**（`.example` を消す）に変更。
+2. その `start_bridge.bat` を右クリック →「**編集**」（メモ帳で開く）。
+3. 次の2行を、自分の値に書き換える:
+   ```
+   set "PI_BIN=C:\pi\pi.exe"
+   set "PI_BRIDGE_MODELS=pi-agent=--provider myllm --model <モデル名>"
+   ```
+   （`PI_BIN` はステップ2でメモした `pi.exe` の場所、`<モデル名>` は①の値）
+4. 上書き保存。**※ 日本語は書き足さないこと**（このファイルは半角英数だけにする）。
+
+## ステップ6：起動する
+
+- **`start_bridge.bat` をダブルクリック**。
+- 黒い画面が開いて `listen = http://0.0.0.0:8765/v1` のような行が出れば動いています。
+- **この黒い画面は閉じないでおく**（閉じると AI も止まります）。
+
+## ステップ7：Open WebUI に登録する（最後の設定）
+
+1. ブラウザで Open WebUI（②の URL）を開いてログイン。
+2. 右上のアイコン → **設定（Settings）→ 接続（Connections）**。
+3. **「＋」で「OpenAI API」の接続を追加**。
+4. 次を入力して保存:
+   - URL（Base URL）: **`http://localhost:8765/v1`**
+   - API Key: **`x`**（何でもよい）
+5. チャット画面の上にあるモデル選択で **`pi-agent`** を選ぶ。
+
+## 動いたか確認する
+
+チャットに次のように送ってみてください:
+
+> 今いるフォルダに memo.txt を作って、中に「テスト」と書いて。
+
+AI が「作りました」と返事をして、実際にファイルができていれば**成功**です 🎉
+（作ったファイルは `start_bridge.bat` と同じ場所の `workspace` フォルダにできます。）
+
+---
+
+# うまくいかないとき
+
+| 症状 | 対処 |
+|---|---|
+| `python` と打っても「認識されません」 | ステップ1の「Add python.exe to PATH」チェックを忘れている。Python を入れ直す。 |
+| 黒い画面が一瞬で消える | `start_bridge.bat` をダブルクリックではなく、右クリック→編集で中身を確認。`PI_BIN` のパスが正しいか、`pi.exe` が実在するか確認。 |
+| `models.json` が保存できない | ステップ4-2 の `mkdir` を実行したか確認。フォルダ `%USERPROFILE%\.pi\agent` が無いと保存できません。 |
+| Open WebUI にモデル `pi-agent` が出ない | 黒い画面（bridge）が起動したままか、接続 URL が `http://localhost:8765/v1` になっているか確認。 |
+| 返事はくるがファイルができない | `start_bridge.bat` の `PI_BRIDGE_TOOLS` に `write` が入っているか確認（既定は入っています）。 |
+| 返事が来ない／エラー | ①のサーバ（AI本体）が起動しているか、URL・モデル名が正しいか、管理者に確認。 |
+
+---
+
+# 詳しい人・管理者向け
+
+ここからは技術的な説明です。
+
+## これは何か
+
+`pi`（[pi-coding-agent](https://github.com/earendil-works/pi-mono)）を OpenAI 互換 API
+として公開する、依存ゼロ（Python 標準ライブラリのみ）の薄い HTTP シムです。
+リクエストごとに `pi -p --mode json ...` を起動し、出力を OpenAI のチャット補完
+（SSE）に変換して返します。`read`/`edit`/`write`/`bash` ツールに対応。
 
 ```
-Open WebUI / OpenAI クライアント
-        │  POST /v1/chat/completions  (OpenAI互換, SSE)
-        ▼
-   pi_bridge.py  (:8765)
-        │  spawn:  pi -p --mode json --no-session --offline --approve ...
-        ▼
-      pi (コーディングエージェント)
-        │  OpenAI互換API
-        ▼
-  LLM バックエンド  (llama.cpp サーバ / Ollama / …)
+Open WebUI ──▶ pi_bridge.py(:8765) ──▶ pi ──▶ LLM(llama.cpp / Ollama …)
 ```
-
-エンドポイント:
-- `GET /v1/models` — `PI_BRIDGE_MODELS` で定義したモデル一覧を返す。
-- `POST /v1/chat/completions` — 会話を直列化し `pi` を実行、その JSON イベント列を
-  解析してアシスタントのテキストを返す（ストリーミング／非ストリーミング両対応）。
-
-## 必要なもの
-
-- **`pi`**（pi-coding-agent） — `PATH` 上に置くか `PI_BIN` でパス指定。
-  [pi-mono のリリース](https://github.com/earendil-works/pi-mono/releases)から入手。
-- **Python 3.8 以上** — 標準ライブラリのみ。`pip install` 不要。
-- **OpenAI 互換の LLM バックエンド** — `pi` が `~/.pi/agent/models.json` で参照する
-  もの（例: llama.cpp サーバ、Ollama）。
-
-## クイックスタート
-
-```powershell
-# Windows PowerShell（Linux/macOS は環境変数の書き方を適宜読み替え）
-$env:PI_BRIDGE_MODELS = "my-agent=--provider <provider> --model <model-id>"
-python pi_bridge.py
-```
-
-クライアントの接続先を `http://localhost:8765/v1` にするだけ（`PI_BRIDGE_API_KEY` を
-設定しない限り API キーは何でも可）。Open WebUI では **OpenAI API 接続**としてこの
-Base URL を追加します。
-
-より詳しい例は、ダブルクリックで起動できる
-[`start_bridge.example.bat`](start_bridge.example.bat)（手軽・配布向き）または
-[`start_bridge.example.ps1`](start_bridge.example.ps1) を参照。`.bat` は
-`start_bridge.bat` にコピーして値を編集して使います（**ASCII で保存**すること。
-cmd は UTF-8 コメントを誤解析します）。
 
 ## 設定（環境変数）
 
-設定はすべて環境変数で行います:
-
-| 変数 | 既定値 | 説明 |
+| 変数 | 既定 | 説明 |
 |---|---|---|
-| `PI_BRIDGE_MODELS` | `pi-agent` | 公開するモデル。`id=<pi の引数>;id2=<pi の引数>`。引数が空なら pi 既定。 |
-| `PI_BIN` | `pi.exe` | `pi` 実行ファイルのパス（`PATH` 上にあるなら省略可）。 |
-| `PI_BRIDGE_HOST` | `0.0.0.0` | バインド先。`127.0.0.1` でローカル限定。 |
-| `PI_BRIDGE_PORT` | `8765` | 待ち受けポート。 |
-| `PI_BRIDGE_CWD` | `./workspace` | エージェントの作業フォルダ＝読み書き先。**この外には書けない。** |
-| `PI_BRIDGE_TOOLS` | pi 既定 (`read,bash,edit,write`) | ツールの許可リスト。読み取り専用は `read,grep,find,ls`。 |
-| `PI_BRIDGE_API_KEY` | _(無効)_ | 設定すると `Authorization: Bearer <key>` を要求。 |
-| `PI_BRIDGE_ALLOW_ORIGIN` | `*` | CORS の `Access-Control-Allow-Origin`。ブラウザ/Direct Connection では OWUI のオリジンを指定。 |
-| `PI_SHOW_TOOLS` | _(無効)_ | `1` でツール実行を `` `[tool: ...]` `` として本文に表示。 |
-| `PI_THINKING` | `off` | `pi --thinking` のレベル。 |
+| `PI_BRIDGE_MODELS` | `pi-agent` | 公開モデル。`id=<pi 引数>;...` |
+| `PI_BIN` | `pi.exe` | pi 実行ファイル（PATH 上なら省略可） |
+| `PI_BRIDGE_HOST` | `0.0.0.0` | バインド先。ローカル限定は `127.0.0.1` |
+| `PI_BRIDGE_PORT` | `8765` | ポート |
+| `PI_BRIDGE_CWD` | `./workspace` | 作業フォルダ＝保存先（この外には書けない） |
+| `PI_BRIDGE_TOOLS` | pi 既定 | ツール許可。読み取り専用は `read,grep,find,ls` |
+| `PI_BRIDGE_API_KEY` | _(無効)_ | 設定で `Authorization: Bearer <key>` を要求 |
+| `PI_BRIDGE_ALLOW_ORIGIN` | `*` | CORS 許可オリジン（ブラウザ Direct Connection 用） |
+| `PI_SHOW_TOOLS` | _(無効)_ | `1` でツール実行を本文表示 |
+| `PI_THINKING` | `off` | `pi --thinking` レベル |
 
 ## 構成パターン
 
-### A. 単一マシン
-
-bridge・`pi`・LLM バックエンドを1台に。Open WebUI（や任意のクライアント）の接続先を
-`http://localhost:8765/v1` にするだけ。最もシンプル。
-
-### B. 共有 Open WebUI サーバ ＋ 各自の PC でエージェント
-
-各ユーザが **自分のマシン**で `pi` ＋ bridge を動かし（＝エージェントが**自分の**ローカル
-ファイルを編集）、UI は共有の Open WebUI サーバを使う構成。
-
-これがうまくいくのは、Open WebUI の
-**[Direct Connections](https://docs.openwebui.com/)** が
-**サーバではなくブラウザから**接続するため。ブラウザと bridge は同じ PC 上にあるので、
-接続 URL は `http://localhost:8765/v1` でよく、**サーバ→クライアント方向の通信が一切不要**。
-
-このモードに必要なこと（すべて bridge 側で対応済み）:
-- **CORS** — ブラウザ発信のため必須。`PI_BRIDGE_ALLOW_ORIGIN` を Open WebUI の
-  オリジン（例 `http://owui.example.com:3000`）に設定。
-- **API キー** — `PI_BRIDGE_API_KEY` を設定し、同じ値を Open WebUI の接続キーに入れる。
-- **`127.0.0.1` バインド** — NW 上の他ホストからエージェントに到達させない。
-
-ステップごとの手順は [`docs/COMPANY_ja.md`](docs/COMPANY_ja.md) にあります。
+- **A. 単一マシン** — bridge・pi・LLM を1台に。接続先 `http://localhost:8765/v1`。
+- **B. 共有 Open WebUI サーバ ＋ 各自 PC でエージェント** — 各自が自分のローカル
+  ファイルを編集。OWUI の Direct Connection はブラウザ発信なので接続先は
+  `http://localhost:8765/v1` でよく、サーバ→クライアントの通信は不要。
+  CORS（`PI_BRIDGE_ALLOW_ORIGIN`）と API キー（`PI_BRIDGE_API_KEY`）、`127.0.0.1`
+  バインドを使う。手順は [`docs/COMPANY_ja.md`](docs/COMPANY_ja.md)。
 
 ## セキュリティ
 
-bridge は `bash`・`write` 権限を持つエージェントを動かせます。チャットに書いた内容が
-ホスト上で実行されうる、という前提で扱ってください。
-
-- エージェントを絞る: 読み取り専用は `PI_BRIDGE_TOOLS=read,grep,find,ls`、
-  `PI_BRIDGE_CWD` は専用フォルダに限定。
-- ネットワークを絞る: `127.0.0.1` バインド＋`PI_BRIDGE_API_KEY`（ポートに到達できる
-  すべてを信頼できる場合を除く）。
-- `pi` は `--approve` 付きで起動し、作業フォルダの `.pi/` と `AGENTS.md` を信頼して
-  読み込みます。信頼できないリポジトリを `PI_BRIDGE_CWD` にしない、または
-  `pi_bridge.py` から `--approve` を外してください。
+bridge は `bash`/`write` 可能なエージェントを動かせます。読み取り専用にするなら
+`PI_BRIDGE_TOOLS=read,grep,find,ls`、ネットワークを絞るなら `127.0.0.1` バインド＋
+`PI_BRIDGE_API_KEY`。`pi` は `--approve` 付き起動で作業フォルダの `.pi/`・`AGENTS.md`
+を信頼読み込みするため、信頼できないフォルダを `PI_BRIDGE_CWD` にしないこと。
 
 ## 実装メモ（ハマりどころ）
 
-- `pi -p` は **stdin の EOF を待つ**。ハング回避のため bridge は `stdin=DEVNULL` で起動。
-- 会話は **コマンドライン引数**で渡す（`@file` 添付だと一時ファイル名がプロンプトに
-  漏れてモデルが混乱する）。非常に長い入力のときだけ一時ファイルにフォールバック。
-- `--offline` は `pi` の起動時ネットワーク処理だけを無効化（LLM 呼び出しには影響なし）。
-  起動を速く・安定させる。
-- `pi` の `write`/`edit` は作業フォルダにサンドボックス化されている。生成物を置きたい
-  場所を `PI_BRIDGE_CWD` で指定する。
-- リクエストごとに `pi` を1プロセス起動（コールドスタート）。高頻度なら常駐型の
-  `pi --mode rpc` 設計の方が速い。
+- `pi -p` は **stdin の EOF を待つ**ため `stdin=DEVNULL` で起動。
+- 会話は **CLI 引数**で渡す（`@file` 添付だと一時ファイル名が漏れてモデルが混乱）。
+- `--offline` は起動時ネットワーク処理のみ無効化（LLM 呼び出しには影響なし）。
+- `.bat` は **ASCII で保存**する（cmd は UTF-8 コメントを誤解析する）。
+- リクエストごとに pi を1プロセス起動（コールドスタート）。高頻度なら `pi --mode rpc` 常駐型が速い。
 
 ## ライセンス
 
