@@ -1,26 +1,34 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 pi-openwebui-bridge
 ===================
-OpenAI 莠呈鋤縺ｮ阮・＞ HTTP 繧ｷ繝縲０pen WebUI 縺九ｉ縲・繝｢繝・Ν縲阪→縺励※ pi-coding-agent
-(@earendil-works/pi, Windows 繝阪う繝・ぅ繝・pi.exe) 繧貞他縺ｳ蜃ｺ縺帙ｋ繧医≧縺ｫ縺吶ｋ縲・
+OpenAI 互換の薄い HTTP シム。Open WebUI から「1モデル」として pi-coding-agent
+(@earendil-works/pi, Windows ネイティブ pi.exe) を呼び出せるようにする。
+
   Open WebUI (WSL2 Docker)
-      | OpenAI 謗･邯・ http://host.docker.internal:8765/v1  (key: 菴輔〒繧ょ庄)
+      | OpenAI 接続: http://host.docker.internal:8765/v1  (key: 何でも可)
       v
   pi_bridge.py (Windows host :8765)
       | spawn: pi.exe -p --mode json @<conv>  ...
       v
   pi.exe -> llama-cpp :8080 / ollama :11434
 
-萓晏ｭ倥↑縺・讓呎ｺ悶Λ繧､繝悶Λ繝ｪ縺ｮ縺ｿ)縲・python pi_bridge.py 縺ｧ襍ｷ蜍輔・
-迺ｰ蠅・､画焚縺ｧ謖吝虚繧貞､画峩:
-  PI_BIN          pi 螳溯｡後ヵ繧｡繧､繝ｫ (default: pi.exe = PATH上のpi、または絶対パス)
-  PI_BRIDGE_HOST  bind host  (default: 0.0.0.0  竊・繧ｳ繝ｳ繝・リ縺九ｉ蛻ｰ驕斐＆縺帙ｋ縺溘ａ)
+依存なし(標準ライブラリのみ)。 python pi_bridge.py で起動。
+
+環境変数で挙動を変更:
+  PI_BIN          pi 実行ファイル (default: pi.exe = PATH 上の pi、または絶対パス指定)
+  PI_BRIDGE_HOST  bind host  (default: 0.0.0.0  ← コンテナから到達させるため)
   PI_BRIDGE_PORT  bind port  (default: 8765)
-  PI_BRIDGE_CWD   pi 縺ｮ菴懈･ｭ繝・ぅ繝ｬ繧ｯ繝医Μ=繧ｨ繝ｼ繧ｸ繧ｧ繝ｳ繝医′隗ｦ繧九ヵ繧ｩ繝ｫ繝
-                  (default: <縺薙・繧ｹ繧ｯ繝ｪ繝励ヨ縺ｮ繝輔か繝ｫ繝>\\workspace)
-  PI_BRIDGE_TOOLS pi 縺ｫ貂｡縺吶ヤ繝ｼ繝ｫ allowlist縲ゆｾ・"read,grep,find,ls" 縺ｧ隱ｭ縺ｿ蜿悶ｊ蟆ら畑縲・                  譛ｪ險ｭ螳壹↑繧・pi 譌｢螳・(read,bash,edit,write = 繝輔Ν/譖ｸ霎ｼ縺ｿ蜿ｯ)縲・  PI_BRIDGE_MODELS  OWUI 縺ｫ蜃ｺ縺吶Δ繝・Ν荳隕ｧ "陦ｨ遉ｺid=pi蠑墓焚 ; ..." 蠖｢蠑上・                    萓・ "pi-gemma-e2b=--model llama-cpp/gemma-4-E2B;pi-gemma-12b=--provider ollama --model gemma4:latest"
-                    譛ｪ險ｭ螳壹↑繧・"pi-agent"(=pi 譌｢螳・ 1蛟九・  PI_SHOW_TOOLS   "1" 縺ｧ縲√ヤ繝ｼ繝ｫ螳溯｡後ｒ譛ｬ譁・↓ [tool: ...] 縺ｨ縺励※蟾ｮ縺苓ｾｼ繧(蜿ｯ隕門喧)縲・  PI_THINKING     pi --thinking 繝ｬ繝吶Ν (off/minimal/low/medium/high)縲Ｅefault off縲・"""
+  PI_BRIDGE_CWD   pi の作業ディレクトリ=エージェントが触るフォルダ
+                  (default: <このスクリプトのフォルダ>\\workspace)
+  PI_BRIDGE_TOOLS pi に渡すツール allowlist。例 "read,grep,find,ls" で読み取り専用。
+                  未設定なら pi 既定 (read,bash,edit,write = フル/書込み可)。
+  PI_BRIDGE_MODELS  OWUI に出すモデル一覧 "表示id=pi引数 ; ..." 形式。
+                    例: "pi-gemma-e2b=--model llama-cpp/gemma-4-E2B;pi-gemma-12b=--provider ollama --model gemma4:latest"
+                    未設定なら "pi-agent"(=pi 既定) 1個。
+  PI_SHOW_TOOLS   "1" で、ツール実行を本文に [tool: ...] として差し込む(可視化)。
+  PI_THINKING     pi --thinking レベル (off/minimal/low/medium/high)。default off。
+"""
 import json
 import os
 import shlex
@@ -39,15 +47,17 @@ CWD = os.environ.get("PI_BRIDGE_CWD", os.path.join(_HERE, "workspace"))
 TOOLS = os.environ.get("PI_BRIDGE_TOOLS", "").strip()
 SHOW_TOOLS = os.environ.get("PI_SHOW_TOOLS", "") in ("1", "true", "yes")
 THINKING = os.environ.get("PI_THINKING", "off").strip()
-# CORS: OWUI 縺ｮ Direct Connection 縺ｯ繝悶Λ繧ｦ繧ｶ逋ｺ菫｡縺ｪ縺ｮ縺ｧ蠢・医０WUI 縺ｮ驟堺ｿ｡繧ｪ繝ｪ繧ｸ繝ｳ繧呈欠螳壽耳螂ｨ
-# (萓・ http://owui.example.com:3000)縲よ悴險ｭ螳壹↑繧・"*"縲・ALLOW_ORIGIN = os.environ.get("PI_BRIDGE_ALLOW_ORIGIN", "*").strip()
-# 險ｭ螳壹☆繧九→繝ｪ繧ｯ繧ｨ繧ｹ繝医↓ Authorization: Bearer <key> 繧定ｦ∵ｱゅ０WUI 縺ｮ謗･邯・Key 縺ｫ蜷悟､繧貞・繧後ｋ縲・API_KEY = os.environ.get("PI_BRIDGE_API_KEY", "").strip()
+# CORS: OWUI の Direct Connection はブラウザ発信なので必須。OWUI の配信オリジンを指定推奨
+# (例: http://owui.example.com:3000)。未設定なら "*"。
+ALLOW_ORIGIN = os.environ.get("PI_BRIDGE_ALLOW_ORIGIN", "*").strip()
+# 設定するとリクエストに Authorization: Bearer <key> を要求。OWUI の接続 Key に同値を入れる。
+API_KEY = os.environ.get("PI_BRIDGE_API_KEY", "").strip()
 
 
 def _parse_models():
     raw = os.environ.get("PI_BRIDGE_MODELS", "").strip()
     if not raw:
-        return {"pi-agent": []}  # pi 譌｢螳壹・繝ｭ繝舌う繝/繝｢繝・Ν
+        return {"pi-agent": []}  # pi 既定プロバイダ/モデル
     out = {}
     for chunk in raw.split(";"):
         chunk = chunk.strip()
@@ -65,12 +75,12 @@ MODELS = _parse_models()
 
 
 def _serialize_messages(messages):
-    """OWUI 縺ｮ messages[] 繧・(system_text, conversation_text) 縺ｫ螟画鋤縲・""
+    """OWUI の messages[] を (system_text, conversation_text) に変換。"""
     sys_parts, convo = [], []
     for m in messages:
         role = m.get("role", "user")
         content = m.get("content", "")
-        if isinstance(content, list):  # OpenAI 縺ｮ繝槭Ν繝√ヱ繝ｼ繝・content
+        if isinstance(content, list):  # OpenAI のマルチパート content
             content = "".join(
                 p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
@@ -86,11 +96,14 @@ def _serialize_messages(messages):
     return "\n".join(sys_parts), "\n\n".join(convo)
 
 
-# Windows 縺ｮ繧ｳ繝槭Φ繝峨Λ繧､繝ｳ髟ｷ荳企剞(~32767)縺ｫ蟇ｾ縺吶ｋ螳牙・繝槭・繧ｸ繝ｳ縲・# 縺薙ｌ譛ｪ貅縺ｪ繧我ｼ夊ｩｱ繧堤峩謗･ argv 縺ｧ貂｡縺・@file 縺縺ｨ繝｢繝・Ν縺ｫ繝輔ぃ繧､繝ｫ蜷阪′貍上ｌ縺ｦ豺ｷ荵ｱ縺吶ｋ縺溘ａ)縲・_ARG_LIMIT = 28000
+# Windows のコマンドライン長上限(~32767)に対する安全マージン。
+# これ未満なら会話を直接 argv で渡す(@file だとモデルにファイル名が漏れて混乱するため)。
+_ARG_LIMIT = 28000
 
 
 def _build_cmd(model_args, conversation_text, conv_file, sys_file):
-    # --approve: 髱槫ｯｾ隧ｱ(-p)縺ｧ繧ゆｽ懈･ｭ繝輔か繝ｫ繝縺ｮ .pi/AGENTS.md/繧ｹ繧ｭ繝ｫ遲峨ｒ菫｡鬆ｼ縺励※隱ｭ縺ｿ霎ｼ繧縲・    # (髱槫ｯｾ隧ｱ繝｢繝ｼ繝峨・繝医Λ繧ｹ繝医・繝励Ο繝ｳ繝励ヨ繧貞・縺輔★縲∵悴蛻､譁ｭ縺縺ｨ譌｢螳壹〒縺薙ｌ繧峨ｒ辟｡隕悶☆繧九◆繧・
+    # --approve: 非対話(-p)でも作業フォルダの .pi/AGENTS.md/スキル等を信頼して読み込む。
+    # (非対話モードはトラストのプロンプトを出さず、未判断だと既定でこれらを無視するため)
     cmd = [PI_BIN, "-p", "--mode", "json", "--no-session", "--offline", "--approve"]
     if THINKING and THINKING != "off":
         cmd += ["--thinking", THINKING]
@@ -99,7 +112,7 @@ def _build_cmd(model_args, conversation_text, conv_file, sys_file):
     if sys_file:
         cmd += ["--append-system-prompt", sys_file]
     cmd += list(model_args)
-    if conv_file:  # 髟ｷ縺吶℃繧句ｴ蜷医・縺ｿ繝輔ぃ繧､繝ｫ豺ｻ莉倥↓繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ
+    if conv_file:  # 長すぎる場合のみファイル添付にフォールバック
         cmd += [f"@{conv_file}"]
     else:
         cmd += [conversation_text]
@@ -107,7 +120,7 @@ def _build_cmd(model_args, conversation_text, conv_file, sys_file):
 
 
 def _iter_pi_text(model_args, system_text, conversation_text):
-    """pi 繧・spawn 縺励√ユ繧ｭ繧ｹ繝域妙迚・縺ｨ莉ｻ諢上〒繝・・繝ｫ逞戊ｷ｡)繧・yield 縺吶ｋ generator縲・""
+    """pi を spawn し、テキスト断片(と任意でツール痕跡)を yield する generator。"""
     os.makedirs(CWD, exist_ok=True)
     conversation_text = conversation_text or "User: (no input)"
     conv_path = None
@@ -163,14 +176,15 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[pi-bridge] " + (fmt % args) + "\n")
 
     def _set_cors(self):
-        # send_response 縺ｨ end_headers 縺ｮ髢薙〒蜻ｼ縺ｶ縺薙→
+        # send_response と end_headers の間で呼ぶこと
         self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Max-Age", "86400")
 
     def do_OPTIONS(self):
-        # CORS 繝励Μ繝輔Λ繧､繝・        self.send_response(204)
+        # CORS プリフライト
+        self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -204,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "service": "pi-bridge", "models": list(MODELS)})
 
     def do_POST(self):
-        # 蜈医↓繝懊ョ繧｣繧貞ｿ・★隱ｭ縺ｿ蛻・ｋ (keep-alive 謗･邯壹・蜿悶ｊ縺薙⊂縺・豺ｷ邱壹ｒ髦ｲ縺・
+        # 先にボディを必ず読み切る (keep-alive 接続の取りこぼし/混線を防ぐ)
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
