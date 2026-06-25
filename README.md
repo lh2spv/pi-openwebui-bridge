@@ -1,133 +1,128 @@
 # pi-openwebui-bridge
 
-A tiny, dependency-free **OpenAI-compatible HTTP shim** that exposes the
-[`pi` coding agent](https://github.com/earendil-works/pi-mono) (`pi-coding-agent`)
-as a selectable model inside [Open WebUI](https://github.com/open-webui/open-webui)
-— or any OpenAI-compatible client.
+[`pi` コーディングエージェント](https://github.com/earendil-works/pi-mono)
+（`pi-coding-agent`）を [Open WebUI](https://github.com/open-webui/open-webui)
+（や任意の OpenAI 互換クライアント）から **1つのモデルとして選べるようにする**、
+依存ゼロの **OpenAI 互換 HTTP シム**です。
 
-It spawns `pi` per request, streams the agent's output back as OpenAI chat
-completions (SSE), and exposes the agent's tools (`read`/`edit`/`write`/`bash`),
-so you can drive a real coding agent — including file edits and command
-execution — straight from an Open WebUI chat, backed by any local LLM
-(llama.cpp, Ollama, …) that `pi` is configured to use.
+リクエストごとに `pi` を起動し、エージェントの出力を OpenAI のチャット補完
+（SSE ストリーミング）として返します。エージェントのツール
+（`read`/`edit`/`write`/`bash`）も使えるので、**ファイル編集やコマンド実行を伴う
+本物のコーディングエージェントを、Open WebUI のチャットからそのまま動かせます**。
+推論には `pi` が向いている任意のローカル LLM（llama.cpp、Ollama など）を使います。
 
-> ⚠️ **This runs an autonomous coding agent with shell and file-write access on
-> the machine where the bridge runs.** Read the [Security](#security) section
-> before exposing it to anything.
+> ⚠️ **これは shell とファイル書き込み権限を持つ自律エージェントを、bridge を動かした
+> マシン上で実行します。** 公開・共有する前に必ず [セキュリティ](#セキュリティ) を読んでください。
 
-## How it works
+## 仕組み
 
 ```
-Open WebUI / OpenAI client
-        │  POST /v1/chat/completions  (OpenAI-compatible, SSE)
+Open WebUI / OpenAI クライアント
+        │  POST /v1/chat/completions  (OpenAI互換, SSE)
         ▼
    pi_bridge.py  (:8765)
         │  spawn:  pi -p --mode json --no-session --offline --approve ...
         ▼
-      pi (coding agent)
-        │  OpenAI-compatible API
+      pi (コーディングエージェント)
+        │  OpenAI互換API
         ▼
-  LLM backend  (llama.cpp server / Ollama / …)
+  LLM バックエンド  (llama.cpp サーバ / Ollama / …)
 ```
 
-Endpoints:
-- `GET /v1/models` — lists the models you configured via `PI_BRIDGE_MODELS`.
-- `POST /v1/chat/completions` — serializes the conversation, runs `pi`, parses its
-  JSON event stream, and returns the assistant text (streaming or non-streaming).
+エンドポイント:
+- `GET /v1/models` — `PI_BRIDGE_MODELS` で定義したモデル一覧を返す。
+- `POST /v1/chat/completions` — 会話を直列化し `pi` を実行、その JSON イベント列を
+  解析してアシスタントのテキストを返す（ストリーミング／非ストリーミング両対応）。
 
-## Requirements
+## 必要なもの
 
-- **`pi`** (pi-coding-agent) — on `PATH`, or point to it with `PI_BIN`.
-  Get it from the [pi-mono releases](https://github.com/earendil-works/pi-mono/releases).
-- **Python 3.8+** — standard library only, no `pip install`.
-- An **OpenAI-compatible LLM backend** that `pi` talks to, configured in
-  `~/.pi/agent/models.json` (e.g. a llama.cpp server or Ollama).
+- **`pi`**（pi-coding-agent） — `PATH` 上に置くか `PI_BIN` でパス指定。
+  [pi-mono のリリース](https://github.com/earendil-works/pi-mono/releases)から入手。
+- **Python 3.8 以上** — 標準ライブラリのみ。`pip install` 不要。
+- **OpenAI 互換の LLM バックエンド** — `pi` が `~/.pi/agent/models.json` で参照する
+  もの（例: llama.cpp サーバ、Ollama）。
 
-## Quick start
+## クイックスタート
 
 ```powershell
-# Windows PowerShell (Linux/macOS: use the equivalent env syntax)
+# Windows PowerShell（Linux/macOS は環境変数の書き方を適宜読み替え）
 $env:PI_BRIDGE_MODELS = "my-agent=--provider <provider> --model <model-id>"
 python pi_bridge.py
 ```
 
-Then point your client at `http://localhost:8765/v1` (any API key works unless
-you set `PI_BRIDGE_API_KEY`). In Open WebUI: add an **OpenAI API** connection
-with that base URL.
+クライアントの接続先を `http://localhost:8765/v1` にするだけ（`PI_BRIDGE_API_KEY` を
+設定しない限り API キーは何でも可）。Open WebUI では **OpenAI API 接続**としてこの
+Base URL を追加します。
 
-See [`start_bridge.example.ps1`](start_bridge.example.ps1) for a fuller example.
+より詳しい例は [`start_bridge.example.ps1`](start_bridge.example.ps1) を参照。
 
-## Configuration
+## 設定（環境変数）
 
-All configuration is via environment variables:
+設定はすべて環境変数で行います:
 
-| Variable | Default | Description |
+| 変数 | 既定値 | 説明 |
 |---|---|---|
-| `PI_BRIDGE_MODELS` | `pi-agent` | Models to expose. `id=<pi args>;id2=<pi args>`. Empty args = pi defaults. |
-| `PI_BIN` | `pi.exe` | Path to the `pi` executable (or rely on `PATH`). |
-| `PI_BRIDGE_HOST` | `0.0.0.0` | Bind address. Use `127.0.0.1` to restrict to the local machine. |
-| `PI_BRIDGE_PORT` | `8765` | Listen port. |
-| `PI_BRIDGE_CWD` | `./workspace` | Working dir = where the agent reads/writes. It **cannot write outside this**. |
-| `PI_BRIDGE_TOOLS` | pi default (`read,bash,edit,write`) | Tool allowlist. Use `read,grep,find,ls` for read-only. |
-| `PI_BRIDGE_API_KEY` | _(off)_ | If set, requires `Authorization: Bearer <key>`. |
-| `PI_BRIDGE_ALLOW_ORIGIN` | `*` | CORS `Access-Control-Allow-Origin`. Set to your Open WebUI origin for browser/Direct-Connection use. |
-| `PI_SHOW_TOOLS` | _(off)_ | `1` to inline tool activity as `` `[tool: ...]` `` in the reply. |
-| `PI_THINKING` | `off` | `pi --thinking` level. |
+| `PI_BRIDGE_MODELS` | `pi-agent` | 公開するモデル。`id=<pi の引数>;id2=<pi の引数>`。引数が空なら pi 既定。 |
+| `PI_BIN` | `pi.exe` | `pi` 実行ファイルのパス（`PATH` 上にあるなら省略可）。 |
+| `PI_BRIDGE_HOST` | `0.0.0.0` | バインド先。`127.0.0.1` でローカル限定。 |
+| `PI_BRIDGE_PORT` | `8765` | 待ち受けポート。 |
+| `PI_BRIDGE_CWD` | `./workspace` | エージェントの作業フォルダ＝読み書き先。**この外には書けない。** |
+| `PI_BRIDGE_TOOLS` | pi 既定 (`read,bash,edit,write`) | ツールの許可リスト。読み取り専用は `read,grep,find,ls`。 |
+| `PI_BRIDGE_API_KEY` | _(無効)_ | 設定すると `Authorization: Bearer <key>` を要求。 |
+| `PI_BRIDGE_ALLOW_ORIGIN` | `*` | CORS の `Access-Control-Allow-Origin`。ブラウザ/Direct Connection では OWUI のオリジンを指定。 |
+| `PI_SHOW_TOOLS` | _(無効)_ | `1` でツール実行を `` `[tool: ...]` `` として本文に表示。 |
+| `PI_THINKING` | `off` | `pi --thinking` のレベル。 |
 
-## Deployment patterns
+## 構成パターン
 
-### A. Single machine
+### A. 単一マシン
 
-Bridge, `pi`, and your LLM backend all on one box. Point Open WebUI (or any
-client) at `http://localhost:8765/v1`. Simplest setup.
+bridge・`pi`・LLM バックエンドを1台に。Open WebUI（や任意のクライアント）の接続先を
+`http://localhost:8765/v1` にするだけ。最もシンプル。
 
-### B. Shared Open WebUI server, agent on each user's own PC
+### B. 共有 Open WebUI サーバ ＋ 各自の PC でエージェント
 
-Each user runs `pi` + the bridge **on their own machine** (so the agent edits
-*their* local files), while a shared Open WebUI server provides the UI.
+各ユーザが **自分のマシン**で `pi` ＋ bridge を動かし（＝エージェントが**自分の**ローカル
+ファイルを編集）、UI は共有の Open WebUI サーバを使う構成。
 
-This works cleanly because Open WebUI's
-**[Direct Connections](https://docs.openwebui.com/)** are made **from the
-browser**, not the server. The browser and the bridge are on the same PC, so the
-connection URL is just `http://localhost:8765/v1` — **no server→client
-networking required.**
+これがうまくいくのは、Open WebUI の
+**[Direct Connections](https://docs.openwebui.com/)** が
+**サーバではなくブラウザから**接続するため。ブラウザと bridge は同じ PC 上にあるので、
+接続 URL は `http://localhost:8765/v1` でよく、**サーバ→クライアント方向の通信が一切不要**。
 
-Requirements for this mode (all handled by the bridge):
-- **CORS** — mandatory for browser-origin requests. Set `PI_BRIDGE_ALLOW_ORIGIN`
-  to your Open WebUI origin (e.g. `http://owui.example.com:3000`).
-- **API key** — set `PI_BRIDGE_API_KEY` and enter the same value as the
-  connection's API key in Open WebUI.
-- **Bind to `127.0.0.1`** so no other host on the network can reach the agent.
+このモードに必要なこと（すべて bridge 側で対応済み）:
+- **CORS** — ブラウザ発信のため必須。`PI_BRIDGE_ALLOW_ORIGIN` を Open WebUI の
+  オリジン（例 `http://owui.example.com:3000`）に設定。
+- **API キー** — `PI_BRIDGE_API_KEY` を設定し、同じ値を Open WebUI の接続キーに入れる。
+- **`127.0.0.1` バインド** — NW 上の他ホストからエージェントに到達させない。
 
-A step-by-step Japanese guide is in [`docs/COMPANY_ja.md`](docs/COMPANY_ja.md).
+ステップごとの手順は [`docs/COMPANY_ja.md`](docs/COMPANY_ja.md) にあります。
 
-## Security
+## セキュリティ
 
-The bridge can run an agent with `bash` and `write` access. Anything typed in the
-chat may execute on the host.
+bridge は `bash`・`write` 権限を持つエージェントを動かせます。チャットに書いた内容が
+ホスト上で実行されうる、という前提で扱ってください。
 
-- Scope the agent: `PI_BRIDGE_TOOLS=read,grep,find,ls` for read-only, and keep
-  `PI_BRIDGE_CWD` pointed at a dedicated folder.
-- Restrict the network: bind `127.0.0.1` and set `PI_BRIDGE_API_KEY` unless you
-  fully trust everything that can reach the port.
-- `pi` is launched with `--approve`, which trusts project-local `.pi/` and
-  `AGENTS.md` in the working folder. Don't point `PI_BRIDGE_CWD` at untrusted
-  repositories, or remove `--approve` from `pi_bridge.py`.
+- エージェントを絞る: 読み取り専用は `PI_BRIDGE_TOOLS=read,grep,find,ls`、
+  `PI_BRIDGE_CWD` は専用フォルダに限定。
+- ネットワークを絞る: `127.0.0.1` バインド＋`PI_BRIDGE_API_KEY`（ポートに到達できる
+  すべてを信頼できる場合を除く）。
+- `pi` は `--approve` 付きで起動し、作業フォルダの `.pi/` と `AGENTS.md` を信頼して
+  読み込みます。信頼できないリポジトリを `PI_BRIDGE_CWD` にしない、または
+  `pi_bridge.py` から `--approve` を外してください。
 
-## Implementation notes (the non-obvious bits)
+## 実装メモ（ハマりどころ）
 
-- `pi -p` waits for **stdin EOF**; the bridge spawns it with `stdin=DEVNULL` to
-  avoid hanging.
-- The conversation is passed as a **CLI argument**, not as an `@file` attachment
-  (attachments leak the temp filename into the prompt and confuse the model).
-  It falls back to a temp file only for very long inputs.
-- `--offline` disables `pi`'s startup network calls (not the LLM call) for faster,
-  more reliable spawns.
-- `pi`'s `write`/`edit` tools are sandboxed to the working directory — set
-  `PI_BRIDGE_CWD` to wherever you want generated files to land.
-- One `pi` process is spawned per request (cold start). For heavy use, a resident
-  `pi --mode rpc` design would be faster.
+- `pi -p` は **stdin の EOF を待つ**。ハング回避のため bridge は `stdin=DEVNULL` で起動。
+- 会話は **コマンドライン引数**で渡す（`@file` 添付だと一時ファイル名がプロンプトに
+  漏れてモデルが混乱する）。非常に長い入力のときだけ一時ファイルにフォールバック。
+- `--offline` は `pi` の起動時ネットワーク処理だけを無効化（LLM 呼び出しには影響なし）。
+  起動を速く・安定させる。
+- `pi` の `write`/`edit` は作業フォルダにサンドボックス化されている。生成物を置きたい
+  場所を `PI_BRIDGE_CWD` で指定する。
+- リクエストごとに `pi` を1プロセス起動（コールドスタート）。高頻度なら常駐型の
+  `pi --mode rpc` 設計の方が速い。
 
-## License
+## ライセンス
 
 [MIT](LICENSE)
